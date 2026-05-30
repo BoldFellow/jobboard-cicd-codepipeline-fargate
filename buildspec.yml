@@ -15,12 +15,15 @@ version: 0.2
 #   ENVIRONMENT_NAME      - stack environment prefix
 #
 # Built-in CodeBuild variables used:
-#   AWS_DEFAULT_REGION, AWS_ACCOUNT_ID, CODEBUILD_RESOLVED_SOURCE_VERSION
+#   AWS_DEFAULT_REGION, CODEBUILD_RESOLVED_SOURCE_VERSION
+# Derived in pre_build:
+#   AWS_ACCOUNT_ID (via aws sts get-caller-identity)
 
 phases:
   pre_build:
     commands:
       - echo "=== pre_build -- auth to ECR and CodeArtifact ==="
+      - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
       - CODEARTIFACT_AUTH_TOKEN=$(aws codeartifact get-authorization-token --domain $CODEARTIFACT_DOMAIN --domain-owner $AWS_ACCOUNT_ID --query authorizationToken --output text --region $AWS_DEFAULT_REGION)
