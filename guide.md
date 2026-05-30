@@ -777,7 +777,17 @@ A route-level error gives the more interesting demo.
    CodeDeploy > Deployments > (latest) > Traffic shifting tab
    ```
 
-6. Fix the bug, commit, and push:
+6. After rollback, the alarm stays in ALARM state until no new 5XX appear for one
+   60-second period. Before pushing the fix, reset the alarm manually so CodeDeploy
+   does not immediately stop the recovery deployment:
+   ```bash
+   aws cloudwatch set-alarm-state \
+     --alarm-name jobboard-cicd-alb-5xx \
+     --state-value OK \
+     --state-reason "Manual reset before fix deployment"
+   ```
+
+7. Fix the bug, commit, and push (do NOT run the load loop during this deployment):
    ```python
    # remove the raise RuntimeError line, restore list_jobs to:
    @app.route("/jobs", methods=["GET"])
