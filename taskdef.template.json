@@ -1,0 +1,34 @@
+{
+  "family": "ENVIRONMENT_NAME-jobs-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "EXECUTION_ROLE_ARN_PLACEHOLDER",
+  "taskRoleArn": "TASK_ROLE_ARN_PLACEHOLDER",
+  "containerDefinitions": [
+    {
+      "name": "jobs-api",
+      "image": "<IMAGE1_NAME>",
+      "portMappings": [
+        {"containerPort": 8080, "protocol": "tcp"}
+      ],
+      "environment": [
+        {"name": "JOBS_TABLE", "value": "JOBS_TABLE_PLACEHOLDER"},
+        {"name": "APPLICATIONS_TABLE", "value": "APPLICATIONS_TABLE_PLACEHOLDER"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "AWSLOGS_GROUP_PLACEHOLDER",
+          "awslogs-region": "REGION_PLACEHOLDER",
+          "awslogs-stream-prefix": "jobs-api"
+        }
+      }
+    }
+  ]
+}

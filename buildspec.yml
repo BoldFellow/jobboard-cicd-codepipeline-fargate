@@ -1,0 +1,74 @@
+version: 0.2
+
+# CodeBuild build spec for jobboard-cicd-codepipeline-fargate
+#
+# Environment variables supplied by CodeBuild project (set in cfn/template.yaml):
+#   JOBS_ECR_REPO         - full URI of jobs-api ECR repo
+#   APPS_ECR_REPO         - full URI of applications-api ECR repo
+#   CODEARTIFACT_DOMAIN   - CodeArtifact domain name
+#   CODEARTIFACT_REPO     - CodeArtifact repository name
+#   TASK_EXECUTION_ROLE_ARN
+#   TASK_ROLE_ARN
+#   JOBS_TABLE            - DynamoDB table name for Jobs
+#   APPLICATIONS_TABLE    - DynamoDB table name for Applications
+#   ECS_LOG_GROUP         - CloudWatch log group name for ECS tasks
+#   ENVIRONMENT_NAME      - stack environment prefix
+#
+# Built-in CodeBuild variables used:
+#   AWS_DEFAULT_REGION, AWS_ACCOUNT_ID, CODEBUILD_RESOLVED_SOURCE_VERSION
+
+phases:
+  pre_build:
+    commands:
+      - echo "=== pre_build: auth to ECR and CodeArtifact ==="
+      - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - CODEARTIFACT_AUTH_TOKEN=$(aws codeartifact get-authorization-token --domain $CODEARTIFACT_DOMAIN --domain-owner $AWS_ACCOUNT_ID --query authorizationToken --output text --region $AWS_DEFAULT_REGION)
+      - CODEARTIFACT_DOMAIN_URL=${CODEARTIFACT_DOMAIN}-${AWS_ACCOUNT_ID}.d.codeartifact.${AWS_DEFAULT_REGION}.amazonaws.com
+      - PIP_INDEX_URL=https://aws:${CODEARTIFACT_AUTH_TOKEN}@${CODEARTIFACT_DOMAIN_URL}/pypi/${CODEARTIFACT_REPO}/simple/
+      - echo "Pre-build complete."
+
+  build:
+    commands:
+      - echo "=== build: docker build for both services ==="
+      - |
+        docker build \
+          --build-arg PIP_INDEX_URL="$PIP_INDEX_URL" \
+          -t "${JOBS_ECR_REPO}:${IMAGE_TAG}" \
+          -t "${JOBS_ECR_REPO}:latest" \
+          app/services/jobs/
+      - |
+        docker build \
+          --build-arg PIP_INDEX_URL="$PIP_INDEX_URL" \
+          -t "${APPS_ECR_REPO}:${IMAGE_TAG}" \
+          -t "${APPS_ECR_REPO}:latest" \
+          app/services/applications/
+
+  post_build:
+    commands:
+      - echo "=== post_build: push images and generate deployment artifacts ==="
+      - docker push "${JOBS_ECR_REPO}:${IMAGE_TAG}"
+      - docker push "${JOBS_ECR_REPO}:latest"
+      - docker push "${APPS_ECR_REPO}:${IMAGE_TAG}"
+      - docker push "${APPS_ECR_REPO}:latest"
+      - echo "Rendering taskdef.json from template..."
+      - |
+        sed \
+          -e "s|<IMAGE1_NAME>|${JOBS_ECR_REPO}:${IMAGE_TAG}|g" \
+          -e "s|EXECUTION_ROLE_ARN_PLACEHOLDER|${TASK_EXECUTION_ROLE_ARN}|g" \
+          -e "s|TASK_ROLE_ARN_PLACEHOLDER|${TASK_ROLE_ARN}|g" \
+          -e "s|JOBS_TABLE_PLACEHOLDER|${JOBS_TABLE}|g" \
+          -e "s|APPLICATIONS_TABLE_PLACEHOLDER|${APPLICATIONS_TABLE}|g" \
+          -e "s|AWSLOGS_GROUP_PLACEHOLDER|${ECS_LOG_GROUP}|g" \
+          -e "s|REGION_PLACEHOLDER|${AWS_DEFAULT_REGION}|g" \
+          -e "s|ENVIRONMENT_NAME|${ENVIRONMENT_NAME}|g" \
+          taskdef.template.json > taskdef.json
+      - echo "Generating imagedefinitions.json for applications-api rolling update..."
+      - printf '[{"name":"applications-api","imageUri":"%s"}]' "${APPS_ECR_REPO}:${IMAGE_TAG}" > imagedefinitions.json
+      - echo "Build complete. Image tag:" $IMAGE_TAG
+
+artifacts:
+  files:
+    - appspec.yaml
+    - taskdef.json
+    - imagedefinitions.json
