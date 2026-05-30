@@ -7,6 +7,8 @@ from jobboard_common.ddb import put_item, get_item, delete_item, scan_items
 app = Flask(__name__)
 JOBS_TABLE = os.environ["JOBS_TABLE"]
 
+raise RuntimeError("intentional startup crash for rollback demo")
+
 
 @app.route("/", methods=["GET"])
 def index():
