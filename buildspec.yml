@@ -20,7 +20,7 @@ version: 0.2
 phases:
   pre_build:
     commands:
-      - echo "=== pre_build: auth to ECR and CodeArtifact ==="
+      - echo "=== pre_build -- auth to ECR and CodeArtifact ==="
       - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
       - CODEARTIFACT_AUTH_TOKEN=$(aws codeartifact get-authorization-token --domain $CODEARTIFACT_DOMAIN --domain-owner $AWS_ACCOUNT_ID --query authorizationToken --output text --region $AWS_DEFAULT_REGION)
