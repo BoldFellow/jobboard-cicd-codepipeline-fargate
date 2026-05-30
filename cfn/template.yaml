@@ -654,11 +654,6 @@ Resources:
       ContainerDefinitions:
         - Name: applications-api
           Image: public.ecr.aws/docker/library/python:3.12-slim
-          Command:
-            - python3
-            - -m
-            - http.server
-            - '8081'
           PortMappings:
             - ContainerPort: 8081
               Protocol: tcp
