@@ -777,9 +777,14 @@ A route-level error gives the more interesting demo.
    CodeDeploy > Deployments > (latest) > Traffic shifting tab
    ```
 
-6. After rollback, the alarm stays in ALARM state until no new 5XX appear for one
-   60-second period. Before pushing the fix, reset the alarm manually so CodeDeploy
-   does not immediately stop the recovery deployment:
+6. After rollback completes, **stop the load loop** (Ctrl-C). Then wait approximately
+   5 minutes before resetting the alarm. ALB 5XX metrics have a ~3-minute processing
+   delay in CloudWatch, so if you reset immediately and start the recovery pipeline,
+   CloudWatch can re-fire the alarm within 60 seconds (it evaluates the still-pending
+   historical data bucket) and stop the recovery deployment too.
+
+   Once 5 minutes have passed since the last 500 response, reset the alarm and push
+   the fix immediately (no load loop during recovery):
    ```bash
    aws cloudwatch set-alarm-state \
      --alarm-name jobboard-cicd-alb-5xx \
