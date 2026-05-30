@@ -37,7 +37,6 @@ def create_job():
 
 @app.route("/jobs", methods=["GET"])
 def list_jobs():
-    raise RuntimeError("simulated database connection failure")
     return jsonify(scan_items(JOBS_TABLE)), 200
 
 
