@@ -30,7 +30,7 @@ phases:
 
   build:
     commands:
-      - echo "=== build: docker build for both services ==="
+      - echo "=== build -- docker build for both services ==="
       - |
         docker build \
           --build-arg PIP_INDEX_URL="$PIP_INDEX_URL" \
@@ -46,7 +46,7 @@ phases:
 
   post_build:
     commands:
-      - echo "=== post_build: push images and generate deployment artifacts ==="
+      - echo "=== post_build -- push images and generate deployment artifacts ==="
       - docker push "${JOBS_ECR_REPO}:${IMAGE_TAG}"
       - docker push "${JOBS_ECR_REPO}:latest"
       - docker push "${APPS_ECR_REPO}:${IMAGE_TAG}"
