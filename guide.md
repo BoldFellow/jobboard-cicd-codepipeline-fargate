@@ -753,18 +753,29 @@ A route-level error gives the more interesting demo.
    aws codepipeline start-pipeline-execution --name jobboard-cicd-pipeline
    ```
 
-3. The Build stage succeeds (the app imports fine). CodeDeploy starts shifting 20%
-   traffic to the new task set. Once traffic reaches the broken set, GET /jobs
-   returns 500.
-
-4. Generate load to trigger the alarm (threshold: > 5 HTTP 5XX in 60 seconds):
+3. The Build stage succeeds (the app imports fine). **Start a load loop immediately**
+   so requests are already hitting the endpoint when CodeDeploy shifts traffic:
    ```bash
-   for i in $(seq 1 30); do curl -s "http://$ALB/jobs" > /dev/null; sleep 2; done
+   # Run this in a separate terminal BEFORE or right after triggering the pipeline.
+   # Keep it running throughout the whole shift (~5 minutes).
+   while true; do
+     curl -s -o /dev/null "http://$ALB/jobs"
+     sleep 3
+   done
    ```
 
-5. Watch the `jobboard-cicd-alb-5xx` CloudWatch alarm turn ALARM. CodeDeploy detects
-   the DEPLOYMENT_STOP_ON_ALARM event and initiates an automatic rollback. Traffic
-   shifts back to the original task set.
+4. CodeDeploy starts shifting 20% traffic per minute to the new task set. Once any
+   traffic reaches the broken set, GET /jobs returns 500. The ALB records these as
+   `HTTPCode_Target_5XX_Count` in CloudWatch (alarm threshold: any 5XX > 0).
+
+5. Watch the `jobboard-cicd-alb-5xx` CloudWatch alarm turn ALARM (usually fires
+   within the first or second minute of the shift). CodeDeploy detects the
+   `DEPLOYMENT_STOP_ON_ALARM` event and initiates an automatic rollback. Traffic
+   returns to the original task set.
+   ```
+   CloudWatch > Alarms > jobboard-cicd-alb-5xx
+   CodeDeploy > Deployments > (latest) > Traffic shifting tab
+   ```
 
 6. Fix the bug, commit, and push:
    ```python
