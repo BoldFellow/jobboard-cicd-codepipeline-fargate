@@ -569,9 +569,10 @@ traffic is shifted back to the original task set automatically.
 7. Production listener: HTTP:80
 8. Target group 1: `jobboard-cicd-jobs-blue`
 9. Target group 2: `jobboard-cicd-jobs-green`
-10. Deployment configuration: **CodeDeployDefault.ECSLinear10PercentEvery1Minutes**
-    - This shifts 10% of traffic to the new (green) task set every minute, giving
-      you a 10-minute window to observe the shift and catch issues before 100%.
+10. Deployment configuration: **jobboard-cicd-linear-20pct-1min** (created by the CFN stack)
+    - This shifts 20% of traffic to the new task set every minute -- 5 steps over
+      ~5 minutes. Faster than the AWS default (10%/min) while still showing the
+      gradual shift clearly in the console.
 11. Rollback: enable **Roll back when a deployment fails** and
     **Roll back when alarm thresholds are met**
 12. Alarms: add `jobboard-cicd-alb-5xx`
@@ -664,63 +665,118 @@ curl -s "http://$ALB/applications?job_id=$JOB_ID" | python3 -m json.tool
 ## S17 -- Demo: ECS blue/green deployment
 
 This is the main teaching moment. Make a visible change to `jobs-api`, push, then
-watch CodeDeploy shift traffic from the blue task set to the green task set at 10%
-per minute -- all without dropping a single request.
+watch CodeDeploy shift traffic from the blue task set to the green task set at 20%
+per minute (5 steps, ~5 minutes) -- all without dropping a single request.
 
-1. Edit `app/services/jobs/app.py` -- change the `index()` response:
+1. Edit `app/services/jobs/app.py` -- add a `version` field to the `list_jobs()` response
+   header or change a log message. The cleanest visible change is adding a custom
+   response header in `list_jobs()`:
    ```python
-   return jsonify({"service": "jobs-api", "status": "ok", "version": "v2"}), 200
+   @app.route("/jobs", methods=["GET"])
+   def list_jobs():
+       resp = jsonify(scan_items(JOBS_TABLE))
+       resp.headers["X-Version"] = "v2"
+       return resp, 200
    ```
 
 2. Commit and push:
    ```bash
-   git commit -am "feat(jobs): add version field to index response"
+   git commit -am "feat(jobs): add X-Version header to list_jobs"
    git push
    ```
 
-3. Open the deployment in the console:
+3. Manually trigger the pipeline (webhook is unreliable):
+   ```bash
+   aws codepipeline start-pipeline-execution --name jobboard-cicd-pipeline
+   ```
+
+4. Open the deployment in the console:
    ```
    CodeDeploy > Applications > jobboard-cicd-jobs
      > Deployment Groups > jobboard-cicd-jobs-bluegreen > Deployments
    ```
 
-4. Watch the **Traffic shifting** tab. Every minute CodeDeploy shifts 10% more
-   traffic to the green target group. At 100%, CodeDeploy waits 5 minutes then
-   terminates the blue task set.
+5. Watch the **Traffic shifting** tab. Every minute CodeDeploy shifts 20% more
+   traffic to the new target group. At 100%, CodeDeploy waits 5 minutes then
+   terminates the old task set.
 
-5. During the shift, curl the index endpoint to see responses from both task sets:
+6. Monitor the ALB rule weights while the shift is in progress:
    ```bash
-   for i in $(seq 1 20); do curl -s "http://$ALB/" | python3 -m json.tool; sleep 5; done
+   LISTENER="<your ALB listener ARN>"
+   for i in $(seq 1 10); do
+     echo -n "[$(date +%H:%M:%S)] "
+     aws elbv2 describe-rules --listener-arn $LISTENER --output json | python3 -c "
+   import sys,json; data=json.load(sys.stdin)
+   for rule in data['Rules']:
+       if rule.get('Priority')=='10':
+           for tg in rule['Actions'][0]['ForwardConfig']['TargetGroups']:
+               n='blue' if 'blue' in tg['TargetGroupArn'] else 'green'
+               print(f'{n}={tg[\"Weight\"]}', end=' ')
+           break
+   print()
+   "
+     sleep 60
+   done
    ```
+
+   **Note:** The `/` (index) route on `jobs-api` is not reachable via ALB because the
+   ALB default action intercepts it before the `/jobs/*` rule. Use the `X-Version`
+   header on `/jobs` responses, or watch the CodeDeploy Traffic shifting tab in the
+   console, as the primary indicator of the shift.
 
 ---
 
 ## S18 -- Demo: automatic rollback
 
-Introduce a startup crash in `jobs-api` to see CodeDeploy detect the failure via
-the CloudWatch alarm and roll back automatically.
+Introduce a bug inside a route handler so the app starts normally, passes health
+checks, but returns 500 on API requests. CodeDeploy shifts traffic, the ALB 5XX
+alarm fires, and CodeDeploy rolls back automatically.
 
-1. Edit `app/services/jobs/app.py` -- add a crash at module level (outside any route):
+**Why not a startup crash?** If the app crashes at startup (e.g. `raise RuntimeError`
+at module level), ECS keeps the tasks crash-looping, CodeDeploy never shifts traffic,
+and the ALB never sees 5XX responses. The alarm never fires. CodeDeploy eventually
+times out and fails -- a DEPLOYMENT_FAILURE rollback, not an alarm-triggered one.
+A route-level error gives the more interesting demo.
+
+1. Edit `app/services/jobs/app.py` -- add an intentional error inside `list_jobs()`:
    ```python
-   raise RuntimeError("intentional startup crash for rollback demo")
+   @app.route("/jobs", methods=["GET"])
+   def list_jobs():
+       raise RuntimeError("simulated database connection failure")
+       return jsonify(scan_items(JOBS_TABLE)), 200
    ```
 
 2. Commit and push:
    ```bash
-   git commit -am "demo: intentional crash for rollback demo"
+   git commit -am "demo: intentional 500 on GET /jobs for rollback demo"
    git push
+   aws codepipeline start-pipeline-execution --name jobboard-cicd-pipeline
    ```
 
-3. The Build stage succeeds (the crash is runtime, not compile-time). When CodeDeploy
-   shifts traffic to the green task set, the tasks crash on startup, the ALB returns
-   5XX responses, and the `jobboard-cicd-alb-5xx` alarm fires.
+3. The Build stage succeeds (the app imports fine). CodeDeploy starts shifting 20%
+   traffic to the new task set. Once traffic reaches the broken set, GET /jobs
+   returns 500.
 
-4. Watch CodeDeploy roll back in the console. The blue task set takes full traffic.
-
-5. Fix the crash, commit, and push:
+4. Generate load to trigger the alarm (threshold: > 5 HTTP 5XX in 60 seconds):
    ```bash
-   git commit -am "fix(jobs): remove intentional crash"
+   for i in $(seq 1 30); do curl -s "http://$ALB/jobs" > /dev/null; sleep 2; done
+   ```
+
+5. Watch the `jobboard-cicd-alb-5xx` CloudWatch alarm turn ALARM. CodeDeploy detects
+   the DEPLOYMENT_STOP_ON_ALARM event and initiates an automatic rollback. Traffic
+   shifts back to the original task set.
+
+6. Fix the bug, commit, and push:
+   ```python
+   # remove the raise RuntimeError line, restore list_jobs to:
+   @app.route("/jobs", methods=["GET"])
+   def list_jobs():
+       return jsonify(scan_items(JOBS_TABLE)), 200
+   ```
+   ```bash
+   git commit -am "fix(jobs): remove intentional 500 from list_jobs"
    git push
+   aws codepipeline start-pipeline-execution --name jobboard-cicd-pipeline
    ```
 
 ---
