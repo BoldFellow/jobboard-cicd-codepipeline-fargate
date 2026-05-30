@@ -17,14 +17,16 @@ OUT_DIR="/tmp/jobboard-common-dist"
 
 echo "==> Building jobboard-common wheel..."
 rm -rf "$OUT_DIR"
-pip install --quiet build twine
-python -m build --wheel --outdir "$OUT_DIR" "$LIB_DIR"
+VENV_DIR="/tmp/jobboard-publish-venv"
+python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/pip" install --quiet build twine
+"$VENV_DIR/bin/python" -m build --wheel --outdir "$OUT_DIR" "$LIB_DIR"
 
 echo "==> Logging twine into CodeArtifact domain=$DOMAIN repo=$REPO region=$REGION..."
 aws codeartifact login --tool twine --domain "$DOMAIN" --repository "$REPO" --region "$REGION"
 
 echo "==> Publishing wheel..."
-twine upload --repository codeartifact "$OUT_DIR"/*.whl
+"$VENV_DIR/bin/twine" upload --repository codeartifact "$OUT_DIR"/*.whl
 
 echo "==> Done. Installed versions:"
 aws codeartifact list-package-versions \
