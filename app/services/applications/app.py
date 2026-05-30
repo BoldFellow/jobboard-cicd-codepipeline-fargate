@@ -10,7 +10,7 @@ APPLICATIONS_TABLE = os.environ["APPLICATIONS_TABLE"]
 
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"service": "applications-api", "status": "ok"}), 200
+    return jsonify({"service": "applications-api", "status": "ok", "version": "v2"}), 200
 
 
 @app.route("/health", methods=["GET"])
