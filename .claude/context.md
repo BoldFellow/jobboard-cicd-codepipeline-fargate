@@ -31,17 +31,21 @@ teaching artifact.
 
 ## Active Work
 
-Initial build complete 2026-05-30. Not yet deployed or pushed to GitHub.
+All three demo scenarios (S17, S18, S19) complete and verified. Stack at clean steady state.
+architecture.drawio created (pipeline-first layout, 2000x1200 canvas). Export to architecture.png pending.
+teaching-guide.md created -- instructor-facing guide covering setup, timing, talking points, gotchas, recovery.
+
+Both ECS services healthy (running=1/desired=1). Alarm OK. Latest ECR image = 64fee982 (git HEAD).
 
 Key files:
-- cfn/template.yaml: single CFN stack (all resources)
+- cfn/template.yaml: single CFN stack; custom deploy config linear-20pct-1min added
 - buildspec.yml: CodeBuild build contract
 - appspec.yaml + taskdef.template.json: CodeDeploy ECS blue/green contract
-- app/lib/jobboard_common/: shared wheel published to CodeArtifact (guide S3)
-- app/services/jobs/app.py + Dockerfile: jobs-api Flask service
-- app/services/applications/app.py + Dockerfile: applications-api Flask service
-- scripts/publish-common-lib.sh: publishes jobboard-common wheel to CodeArtifact
-- guide.md: S0 prereqs -> S11 teardown + Appendix HTTPS
+- app/lib/jobboard_common/: shared wheel published to CodeArtifact
+- app/services/jobs/app.py: jobs-api Flask service (clean v2)
+- app/services/applications/app.py: applications-api with version:v2 index response
+- guide.md: all demo sections updated including S18 alarm-wait clarification
+- architecture.drawio: pipeline-first diagram (pipeline top half, runtime bottom half)
 
 ## Key Decisions
 
@@ -65,17 +69,45 @@ Key files:
 2026-05-30: Single NAT GW (not HA) to minimize cost for a teaching demo. VPC endpoints
   for ECR/CWLogs eliminate NAT traffic for image pulls and log shipping.
 
+2026-05-30: S18 rollback demo requires route-level crash, NOT module-level crash. Module-level
+  RuntimeError causes a crash loop before traffic shifts -- CodeDeploy never routes traffic to
+  the broken task set, ALB never sees 5XX, alarm never fires. The DEPLOYMENT_FAILURE rollback
+  fires but silently times out. Correct S18: raise inside list_jobs() so app passes health
+  checks, CodeDeploy shifts traffic, alarm fires. Updated guide.md and app.py.
+
+2026-05-30: Custom CodeDeploy deployment config (linear-20pct-1min: 20% per minute, 5 steps,
+  ~5 min) added to cfn/template.yaml. AWS built-in ECSLinear10PercentEvery1Minutes (10 min)
+  is too slow for classroom demos. DependsOn added to deployment group to ensure creation order.
+
+2026-05-30: ALB / index route: Flask / route is NOT reachable via ALB for jobs-api because
+  the ALB default action (fixed-response) intercepts all requests that don't match /jobs/* or
+  /applications/*. Use X-Version response header on /jobs endpoint to observe which task set
+  is serving -- not the index response body.
+
 ## Next Steps
 
-- Validate CFN template: aws cloudformation validate-template --template-body file://cfn/template.yaml
-- Create GitHub repo, push, set as remote origin
-- Follow guide S0-S4 to deploy and run first pipeline
-- Export architecture.drawio to architecture.png (requires draw.io desktop or CLI)
-- Push to GitHub after validation
+- Open architecture.drawio in draw.io, export to architecture.png
+- Teardown when done (S22 in guide.md): empty S3/ECR, delete stack, delete CodeArtifact domain, delete CodeStar Connection
 
 ## Completed
 
+2026-05-30: Repo created, pushed to GitHub, stack deployed, first pipeline run complete
+2026-05-30: S17 (blue/green demo) -- clean 9-step shift 19:03-19:12, green=100% confirmed
+2026-05-30: S18 attempt 1 -- stopped; discovered startup crash is wrong failure mode; guide rewritten
+2026-05-30: S18 (rollback demo) -- alarm fired at blue=20/green=80 (4th step); CodeDeploy stopped
+  deployment d-VI61WYZQJ with ALARM_ACTIVE reason; traffic snapped to blue=100; GET /jobs=200
+  restored within seconds of rollback. Guide updated: wait 5 min after rollback for metric window
+  to clear before resetting alarm (CloudWatch ALB metric has ~3 min processing delay).
+2026-05-30: S19 (ECS rolling update) -- pipeline a17c1a3e; running=2 briefly at task handoff,
+  then running=1/desired=1 steady state; no traffic shifting, no TG swap; completed in ~3 min.
+2026-05-30: architecture.drawio created -- pipeline-first layout, 2000x1200, AWS4 icon standard.
+2026-05-30: teaching-guide.md created -- instructor setup checklist, timing, per-demo talking
+  points, critical gotchas (route-level vs startup crash, 5-min alarm cooldown), recovery procedures.
+
 ## Session Notes
 
-2026-05-30: Initial build -- all files created (CFN, buildspec, appspec, taskdef template,
-  Flask apps, jobboard_common, scripts, guide, README, .claude/context.md). Not yet deployed.
+2026-05-30: S18 rollback demo succeeded -- alarm fired during 4th of 5 shift steps, immediate
+  rollback to blue TG. S19 queued (applications-api rolling update, commit 958fb6d local only).
+2026-05-30: S19 rolling update complete. All three demos verified. Stack at clean steady state.
+2026-05-30: architecture.drawio created. Pipeline top half, runtime bottom half, VPC outline.
+2026-05-30: teaching-guide.md created. Project complete -- only remaining task is PNG export.
