@@ -1,11 +1,50 @@
 import os
 import uuid
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, abort, render_template_string
 from jobboard_common.ddb import put_item, get_item, scan_items, query_by_gsi
 
 app = Flask(__name__)
 APPLICATIONS_TABLE = os.environ["APPLICATIONS_TABLE"]
+
+APPS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Applications</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+  <nav class="navbar navbar-dark bg-success mb-4">
+    <div class="container">
+      <span class="navbar-brand fw-bold">Job Applications</span>
+    </div>
+  </nav>
+  <div class="container">
+    <h4 class="mb-3">Applications</h4>
+    <div class="row">
+      {% for appl in apps %}
+      <div class="col-md-4 mb-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">{{ appl.get('applicant_name', '') }}</h5>
+            <h6 class="card-subtitle mb-2 text-muted">{{ appl.get('applicant_email', '') }}</h6>
+            <p class="card-text text-muted mb-0">Job ID: {{ appl.get('job_id', '')[:8] }}...</p>
+          </div>
+          <div class="card-footer text-muted">
+            <small>Applied: {{ appl.get('applied_at', '')[:10] }}</small>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if not apps %}
+    <p class="text-muted">No applications yet.</p>
+    {% endif %}
+  </div>
+</body>
+</html>"""
 
 
 @app.route("/", methods=["GET"])
@@ -43,6 +82,8 @@ def list_applications():
         items = query_by_gsi(APPLICATIONS_TABLE, "job_id-index", "job_id", job_id)
     else:
         items = scan_items(APPLICATIONS_TABLE)
+    if request.accept_mimetypes.best_match(['application/json', 'text/html']) == 'text/html':
+        return render_template_string(APPS_HTML, apps=items), 200, {'Cache-Control': 'no-store'}
     return jsonify(items), 200
 
 

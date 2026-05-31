@@ -759,11 +759,10 @@ Resources:
       Protocol: HTTP
       Port: 80
       DefaultActions:
-        - Type: fixed-response
-          FixedResponseConfig:
-            StatusCode: '200'
-            ContentType: text/plain
-            MessageBody: Job Board API
+        - Type: redirect
+          RedirectConfig:
+            Path: /jobs
+            StatusCode: HTTP_302
 
   JobsListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule

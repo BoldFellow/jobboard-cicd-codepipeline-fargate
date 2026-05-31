@@ -1,4 +1,4 @@
-<!-- Updated by Claude. Last write: 2026-05-30. Overwrite in place -- preserve section headings. -->
+<!-- Updated by Claude. Last write: 2026-05-31. Overwrite in place -- preserve section headings. -->
 
 # jobboard-cicd-codepipeline-fargate -- Session Context
 
@@ -31,21 +31,31 @@ teaching artifact.
 
 ## Active Work
 
-All three demo scenarios (S17, S18, S19) complete and verified. Stack at clean steady state.
-architecture.drawio created (pipeline-first layout, 2000x1200 canvas). Export to architecture.png pending.
-teaching-guide.md created -- instructor-facing guide covering setup, timing, talking points, gotchas, recovery.
+HTML UI added to both services (2026-05-31). Jobs-api and applications-api now serve
+Bootstrap 5 HTML to browsers and JSON to API clients (content negotiation via
+best_match). S17/S18/S19 demo sections rewritten to drive from the browser. Changes
+are code-complete; not yet deployed (requires new pipeline run after commit + push).
 
-Both ECS services healthy (running=1/desired=1). Alarm OK. Latest ECR image = 64fee982 (git HEAD).
+Key changes in this session:
+- app/services/jobs/app.py: JOBS_HTML constant + content negotiation in list_jobs()
+- app/services/applications/app.py: APPS_HTML constant + content negotiation in list_applications()
+- scripts/seed-ddb.sh: location + salary fields on both jobs; second application (Bob Jones)
+- cfn/template.yaml: ALBListener DefaultActions changed from fixed-response to redirect -> /jobs
+- guide.md S17: browser-based demo (salary badge commit, F5 during shift)
+- guide.md S18: browser shows Flask 500 page; fix commit restores content-negotiation version
+- guide.md S19: browser-based demo (total count banner commit)
+- guide.md Appendix A: pre-session redirect check + manual listener update command
+- teaching-guide.md S17/S18/S19: matching updates, "What students see in the browser" sections added
 
 Key files:
-- cfn/template.yaml: single CFN stack; custom deploy config linear-20pct-1min added
+- cfn/template.yaml: single CFN stack; ALB redirects / -> /jobs (changed from fixed-response)
 - buildspec.yml: CodeBuild build contract
 - appspec.yaml + taskdef.template.json: CodeDeploy ECS blue/green contract
 - app/lib/jobboard_common/: shared wheel published to CodeArtifact
-- app/services/jobs/app.py: jobs-api Flask service (clean v2)
-- app/services/applications/app.py: applications-api with version:v2 index response
-- guide.md: all demo sections updated including S18 alarm-wait clarification
-- architecture.drawio: pipeline-first diagram (pipeline top half, runtime bottom half)
+- app/services/jobs/app.py: JOBS_HTML + list_jobs() content negotiation
+- app/services/applications/app.py: APPS_HTML + list_applications() content negotiation
+- guide.md: S17/S18/S19 rewritten for browser-based demos; Appendix A redirect check added
+- teaching-guide.md: S17/S18/S19 updated with browser observation notes
 
 ## Key Decisions
 
@@ -84,6 +94,20 @@ Key files:
   /applications/*. Use X-Version response header on /jobs endpoint to observe which task set
   is serving -- not the index response body.
 
+2026-05-31: ALB default action changed from fixed-response to redirect (/ -> /jobs, HTTP_302).
+  Students paste the ALB URL in a browser and land directly on the job board. No more
+  "Job Board API" text response confusion. CFN listener update is non-disruptive (no TG
+  recreation). Pre-session check: curl -sI http://<alb>/ | grep -i location -> /jobs.
+
+2026-05-31: Content negotiation in list_jobs() and list_applications() uses
+  best_match(['application/json', 'text/html']). json is FIRST so */* from curl/scripts
+  falls through to JSON. Browsers send text/html with higher quality and get HTML.
+  Cache-Control: no-store required -- without it the browser caches and the blue/green
+  version-flipping demo looks broken.
+
+2026-05-31: S17 demo commit: add salary badge span inside JOBS_HTML card-body (not a Python
+  code change). S19 demo commit: add alert-info div inside APPS_HTML after the h4 heading.
+
 ## Next Steps
 
 - Open architecture.drawio in draw.io, export to architecture.png
@@ -106,8 +130,8 @@ Key files:
 
 ## Session Notes
 
-2026-05-30: S18 rollback demo succeeded -- alarm fired during 4th of 5 shift steps, immediate
-  rollback to blue TG. S19 queued (applications-api rolling update, commit 958fb6d local only).
 2026-05-30: S19 rolling update complete. All three demos verified. Stack at clean steady state.
 2026-05-30: architecture.drawio created. Pipeline top half, runtime bottom half, VPC outline.
 2026-05-30: teaching-guide.md created. Project complete -- only remaining task is PNG export.
+2026-05-31: HTML UI added to both services. ALB redirect added. S17/S18/S19 rewritten for
+  browser-based demos. Code complete; deploy requires commit + push + pipeline run.

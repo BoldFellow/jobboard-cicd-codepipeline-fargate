@@ -176,26 +176,42 @@ traffic because there is no traffic-shifting concept in rolling.
 
 Students see that "zero-downtime deployment" is not magic -- it is two live task sets,
 a weighted listener rule, and a controlled shift window. The shift is slow enough
-(20%/min, 5 steps) to observe in real time.
+(20%/min, 5 steps) to observe in real time. The browser makes the shift tangible:
+some refreshes show v1 cards (no badge), some show v2 cards (badge visible).
+
+### Pre-session setup check
+
+Before S17, confirm the ALB redirect is in place:
+```bash
+curl -sI "http://$ALB/" | grep -i location
+# Expected: Location: /jobs
+```
+Seed the database if not done yet: `bash scripts/seed-ddb.sh <alb>`. Open
+`http://<alb>` in your browser and confirm two job cards appear (no salary badge).
 
 ### Setup (in advance or live)
 
-Edit `app/services/jobs/app.py`, add `X-Version` header to `list_jobs()`:
+Edit `app/services/jobs/app.py`, add a salary badge inside `JOBS_HTML`. Find the
+location paragraph inside card-body and add the badge on the next line:
 
-```python
-@app.route("/jobs", methods=["GET"])
-def list_jobs():
-    resp = jsonify(scan_items(JOBS_TABLE))
-    resp.headers["X-Version"] = "v2"
-    return resp, 200
+```html
+<p class="card-text text-muted mb-0">{{ job.get('location', 'On-site') }}</p>
+<span class="badge bg-success">{{ job.get('salary', 'Competitive') }}</span>
 ```
 
 Commit and push, then manually trigger:
 ```bash
-git commit -am "feat(jobs): add X-Version header"
+git commit -am "feat(jobs): show salary badge on job cards"
 git push
 aws codepipeline start-pipeline-execution --name jobboard-cicd-pipeline
 ```
+
+### What students see in the browser
+
+Keep the job board open at `http://<alb>` (which redirects to `/jobs`). During the
+shift, each F5 is independently load-balanced. Students see the page flip between
+v1 (no badge) and v2 (badge) as the traffic split moves from 80/20 to 0/100. After
+100% green, every refresh shows the badge.
 
 ### Console path during the shift
 
@@ -205,14 +221,15 @@ CodeDeploy > Applications > jobboard-cicd-jobs
   > Deployments > (latest) > Traffic shifting tab
 ```
 
-The Traffic shifting tab is the clearest visual. It shows the current weight split
-and each shift step with a timestamp.
+The Traffic shifting tab shows the current weight split and each shift step with a
+timestamp. Run the side alongside the browser to correlate the split percentage with
+what students are seeing on refresh.
 
 ### What to watch for
 
 - Build stage takes 4-6 min (Docker build + push). Wait until the Deploy stage starts.
-- Traffic shifting begins when the green task set passes health checks. You will see
-  the split move: 80/20 -> 60/40 -> 40/60 -> 20/80 -> 0/100.
+- Traffic shifting begins when the green task set passes health checks. Split moves:
+  80/20 -> 60/40 -> 40/60 -> 20/80 -> 0/100.
 - Each step is 1 minute.
 - After 100% green, CodeDeploy waits 5 minutes then terminates the blue task set.
 
@@ -241,29 +258,18 @@ print()
 done
 ```
 
-### Verify the shift is complete
-
-```bash
-# Should return X-Version: v2 header (green task set serving)
-curl -si "http://$ALB/jobs" | grep X-Version
-```
-
 ### Talking points during the shift
 
 - "Notice /jobs is still returning 200 the entire time. No traffic is dropped."
 - "The ALB is doing weighted forwarding between two live target groups. The app did
   not restart -- two independent task sets exist simultaneously during the shift."
+- "Every browser refresh is a separate request. The ALB picks a target group based on
+  the current weights. That is why you see both versions during the shift."
 - "What would happen if the new task set was unhealthy? The CloudWatch alarm would
   fire, CodeDeploy would roll back to blue. We demo that next."
 - After 100%: "CodeDeploy holds the blue task set alive for 5 minutes after full
   cutover. That is the rollback window -- if something wrong surfaces in production
   after the shift, CodeDeploy can still snap back."
-
-### Gotcha -- ALB index route
-
-The ALB default action (a fixed-response 200) intercepts `GET /` before the
-`/jobs*` rule. Calling `curl http://$ALB/` returns 200 from the ALB itself, not
-the Flask app. This confuses students. Use `/jobs` not `/` as the health probe.
 
 ---
 
@@ -273,7 +279,8 @@ the Flask app. This confuses students. Use `/jobs` not `/` as the health probe.
 
 Automatic rollback wired to a CloudWatch alarm. Students see the alarm as an active
 infrastructure contract, not just an alert. CodeDeploy observing the alarm is a
-service-level SLO enforcer.
+service-level SLO enforcer. The browser makes it visceral: students see Flask's 500
+error page land in the middle of a live service, then watch it vanish on rollback.
 
 ### Critical distinction -- route-level vs startup crash
 
@@ -285,17 +292,22 @@ passes health checks. The ALB never sees 5XX. The alarm never fires.
 CodeDeploy eventually times out and reports DEPLOYMENT_FAILURE -- that is a different
 (less interesting) rollback mechanism and misses the alarm story entirely.
 
-**Always raise inside `list_jobs()`, not at module level.**
+**Always raise inside `list_jobs()`, not at module level.** The route-level crash is
+what lets the task pass health checks but then return 500 on real requests -- which
+is what the browser shows as Flask's error page.
 
 ### Setup (right after S17 completes)
 
-Edit `app/services/jobs/app.py` -- raise inside the route handler:
+Edit `app/services/jobs/app.py` -- raise as the first statement inside the route handler:
 
 ```python
 @app.route("/jobs", methods=["GET"])
 def list_jobs():
     raise RuntimeError("simulated database connection failure")
-    return jsonify(scan_items(JOBS_TABLE)), 200
+    items = scan_items(JOBS_TABLE)
+    if request.accept_mimetypes.best_match(['application/json', 'text/html']) == 'text/html':
+        return render_template_string(JOBS_HTML, jobs=items), 200, {'Cache-Control': 'no-store'}
+    return jsonify(items), 200
 ```
 
 Commit and push:
@@ -307,9 +319,10 @@ aws codepipeline start-pipeline-execution --name jobboard-cicd-pipeline
 
 ### Start the load loop immediately
 
-The load loop must be running before CodeDeploy starts shifting traffic. If you
-start it too late, CodeDeploy may complete the shift to green before any requests
-hit the broken handler. The alarm only fires if it actually sees 5XX responses.
+The load loop must be running before CodeDeploy starts shifting traffic. It generates
+the 5XX requests CloudWatch needs to fire the alarm. Keep the job board open in the
+browser alongside the terminal -- students see both the 500 status codes and the Flask
+error page.
 
 ```bash
 # Open a dedicated terminal. Keep this running for the entire demo.
@@ -319,6 +332,13 @@ while true; do
   sleep 3
 done
 ```
+
+### What students see in the browser
+
+During the shift, browser refreshes that land on the green task set show Flask's
+default 500 error page ("Internal Server Error") instead of the job board. The load
+loop terminal shows the matching 500 status codes. After CodeDeploy rolls back,
+both the terminal and browser return to normal immediately.
 
 ### Console paths to open (side by side on projector)
 
@@ -335,11 +355,12 @@ Right panel:
 ### What to watch for
 
 1. Build stage succeeds (the RuntimeError is inside a function, not at import time).
-2. CodeDeploy starts the shift. Load loop shows 200 (hitting blue task set still).
-3. At 20% to green, some requests start returning 500 (load loop shows 500).
+2. CodeDeploy starts the shift. Load loop shows 200, browser shows the job board.
+3. At 20-40% to green, some requests return 500. Load loop shows 500, browser shows
+   the Flask error page on some refreshes.
 4. CloudWatch alarm transitions to ALARM within 1-2 minutes of first 500.
 5. CodeDeploy stops the shift and rolls traffic back to 100% blue.
-6. Load loop returns to 200 immediately.
+6. Load loop returns to 200, browser shows the job board again.
 
 ### After rollback -- reset procedure (5-min wait required)
 
@@ -359,8 +380,11 @@ aws cloudwatch set-alarm-state \
 
 # Step 2 -- fix the bug
 # Edit app/services/jobs/app.py: remove the raise RuntimeError line
-# list_jobs() should return:
-#   return jsonify(scan_items(JOBS_TABLE)), 200
+# Restore list_jobs() to:
+#   items = scan_items(JOBS_TABLE)
+#   if request.accept_mimetypes.best_match(['application/json', 'text/html']) == 'text/html':
+#       return render_template_string(JOBS_HTML, jobs=items), 200, {'Cache-Control': 'no-store'}
+#   return jsonify(items), 200
 
 # Step 3 -- push the fix (NO load loop during recovery)
 git commit -am "fix(jobs): remove intentional 500 from list_jobs"
@@ -384,8 +408,9 @@ aws cloudwatch describe-alarms \
 - While the load loop shows 200: "CodeDeploy is running tasks in green but the
   listener still forwards 80% to blue. The broken handler exists but is not yet
   reachable from the public internet."
-- When the first 500 appears: "There it is -- green just received a request and
-  returned a 500. That goes into the ALB 5XX metric bucket."
+- When the first 500 appears in the terminal and browser: "There it is -- green just
+  received a request and returned a 500. That goes into the ALB 5XX metric bucket.
+  The browser is showing you exactly what a user would see."
 - When the alarm fires: "The alarm crossed the threshold. CodeDeploy is watching
   that alarm -- it will stop the shift and snap back to blue immediately."
 - After rollback: "Notice we did not click anything. No PagerDuty, no human in the
@@ -403,18 +428,25 @@ aws cloudwatch describe-alarms \
 ### What this demo teaches
 
 The difference between ECS rolling update and CodeDeploy blue/green is architectural,
-not just visual. Rolling update is faster and simpler but has no rollback wire.
+not just visual. Rolling update is faster and simpler but has no rollback wire. The
+browser makes the contrast concrete: a new banner appears after the task replaces,
+with no F5-flipping during the shift.
 
 ### Setup
 
-Edit `app/services/applications/app.py`:
+Open `http://<alb>/applications` in your browser before pushing. Students see two
+application cards (Alice Smith, Bob Jones). No banner yet -- v1.
 
-```python
-return jsonify({"service": "applications-api", "status": "ok", "version": "v2"}), 200
+Edit `app/services/applications/app.py` -- add a total-count banner inside `APPS_HTML`.
+Find the `<h4 class="mb-3">Applications</h4>` line and add the alert immediately after:
+
+```html
+<h4 class="mb-3">Applications</h4>
+<div class="alert alert-info">Total applications: {{ apps|length }}</div>
 ```
 
 ```bash
-git commit -am "feat(applications): add version to index response"
+git commit -am "feat(applications): show total application count banner"
 git push
 aws codepipeline start-pipeline-execution --name jobboard-cicd-pipeline
 ```
@@ -427,6 +459,13 @@ ECS > Clusters > jobboard-cicd
   > Deployments tab
 ```
 
+### What students see in the browser
+
+Unlike S17, there is no version-flipping during the deploy -- rolling update replaces
+the single task directly, not via weighted forwarding. After the deploy completes
+(~3 min), refresh `http://<alb>/applications` and the banner "Total applications: 2"
+appears. One refresh, one state change.
+
 ### What to watch for
 
 ECS shows two deployment rows briefly: the old revision at desiredCount=0/runningCount=1
@@ -436,6 +475,9 @@ no target group swap visible anywhere.
 
 ### Talking points
 
+- "Open the browser at /applications. Notice there is no flipping between old and new
+  during the deploy. ECS replaces the task directly. When it is done, you see the new
+  version -- not gradually, all at once."
 - "Where is the Traffic shifting tab? There is none. ECS replaces the task directly --
   there is no green task set, no rollback window, no alarm wire."
 - "When would you choose rolling over blue/green? For stateless services that are

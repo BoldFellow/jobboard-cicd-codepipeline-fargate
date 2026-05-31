@@ -664,43 +664,48 @@ curl -s "http://$ALB/applications?job_id=$JOB_ID" | python3 -m json.tool
 
 ## S17 -- Demo: ECS blue/green deployment
 
-This is the main teaching moment. Make a visible change to `jobs-api`, push, then
-watch CodeDeploy shift traffic from the blue task set to the green task set at 20%
-per minute (5 steps, ~5 minutes) -- all without dropping a single request.
+This is the main teaching moment. Open the job board in a browser, push a commit that
+adds a salary badge to each card, then watch the page change live as CodeDeploy shifts
+traffic at 20% per minute -- all without dropping a single request.
 
-1. Edit `app/services/jobs/app.py` -- add a `version` field to the `list_jobs()` response
-   header or change a log message. The cleanest visible change is adding a custom
-   response header in `list_jobs()`:
-   ```python
-   @app.route("/jobs", methods=["GET"])
-   def list_jobs():
-       resp = jsonify(scan_items(JOBS_TABLE))
-       resp.headers["X-Version"] = "v2"
-       return resp, 200
+1. **Before pushing anything**, open `http://<alb>` in your browser. The ALB redirects
+   to `/jobs` and you see two job cards showing Title, Company, Location, and Posted
+   date. No salary badge yet -- this is v1.
+
+2. Edit `app/services/jobs/app.py` -- add a salary badge inside `JOBS_HTML`. Find the
+   location paragraph inside the card-body and add the badge on the next line:
+   ```html
+   <p class="card-text text-muted mb-0">{{ job.get('location', 'On-site') }}</p>
+   <span class="badge bg-success">{{ job.get('salary', 'Competitive') }}</span>
    ```
 
-2. Commit and push:
+3. Commit and push:
    ```bash
-   git commit -am "feat(jobs): add X-Version header to list_jobs"
+   git commit -am "feat(jobs): show salary badge on job cards"
    git push
    ```
 
-3. Manually trigger the pipeline (webhook is unreliable):
+4. Manually trigger the pipeline (webhook is unreliable):
    ```bash
    aws codepipeline start-pipeline-execution --name jobboard-cicd-pipeline
    ```
 
-4. Open the deployment in the console:
+5. Open the deployment in the console:
    ```
    CodeDeploy > Applications > jobboard-cicd-jobs
      > Deployment Groups > jobboard-cicd-jobs-bluegreen > Deployments
    ```
 
-5. Watch the **Traffic shifting** tab. Every minute CodeDeploy shifts 20% more
+6. Watch the **Traffic shifting** tab. Every minute CodeDeploy shifts 20% more
    traffic to the new target group. At 100%, CodeDeploy waits 5 minutes then
    terminates the old task set.
 
-6. Monitor the ALB rule weights while the shift is in progress:
+7. **Mash F5 on the job board in your browser while the shift is in progress.** The
+   ALB load-balances per request. Some refreshes hit the blue task set (no badge),
+   some hit the green task set (salary badge visible). The proportion of green
+   responses increases each minute. After 100%, every refresh shows the badge.
+
+8. Monitor the ALB rule weights from a terminal while the shift runs:
    ```bash
    LISTENER="<your ALB listener ARN>"
    for i in $(seq 1 10); do
@@ -719,18 +724,14 @@ per minute (5 steps, ~5 minutes) -- all without dropping a single request.
    done
    ```
 
-   **Note:** The `/` (index) route on `jobs-api` is not reachable via ALB because the
-   ALB default action intercepts it before the `/jobs/*` rule. Use the `X-Version`
-   header on `/jobs` responses, or watch the CodeDeploy Traffic shifting tab in the
-   console, as the primary indicator of the shift.
-
 ---
 
 ## S18 -- Demo: automatic rollback
 
 Introduce a bug inside a route handler so the app starts normally, passes health
 checks, but returns 500 on API requests. CodeDeploy shifts traffic, the ALB 5XX
-alarm fires, and CodeDeploy rolls back automatically.
+alarm fires, and CodeDeploy rolls back automatically. Students see the Flask 500
+error page in the browser when traffic hits the broken task set.
 
 **Why not a startup crash?** If the app crashes at startup (e.g. `raise RuntimeError`
 at module level), ECS keeps the tasks crash-looping, CodeDeploy never shifts traffic,
@@ -738,12 +739,16 @@ and the ALB never sees 5XX responses. The alarm never fires. CodeDeploy eventual
 times out and fails -- a DEPLOYMENT_FAILURE rollback, not an alarm-triggered one.
 A route-level error gives the more interesting demo.
 
-1. Edit `app/services/jobs/app.py` -- add an intentional error inside `list_jobs()`:
+1. Edit `app/services/jobs/app.py` -- add an intentional error as the first statement
+   inside `list_jobs()`:
    ```python
    @app.route("/jobs", methods=["GET"])
    def list_jobs():
        raise RuntimeError("simulated database connection failure")
-       return jsonify(scan_items(JOBS_TABLE)), 200
+       items = scan_items(JOBS_TABLE)
+       if request.accept_mimetypes.best_match(['application/json', 'text/html']) == 'text/html':
+           return render_template_string(JOBS_HTML, jobs=items), 200, {'Cache-Control': 'no-store'}
+       return jsonify(items), 200
    ```
 
 2. Commit and push:
@@ -754,24 +759,24 @@ A route-level error gives the more interesting demo.
    ```
 
 3. The Build stage succeeds (the app imports fine). **Start a load loop immediately**
-   so requests are already hitting the endpoint when CodeDeploy shifts traffic:
+   in a separate terminal -- it generates the 5XX requests that trigger the alarm:
    ```bash
-   # Run this in a separate terminal BEFORE or right after triggering the pipeline.
-   # Keep it running throughout the whole shift (~5 minutes).
+   # Keep this running throughout the entire shift (~5 minutes).
    while true; do
-     curl -s -o /dev/null "http://$ALB/jobs"
+     STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://$ALB/jobs")
+     echo "[$(date +%H:%M:%S)] GET /jobs -> $STATUS"
      sleep 3
    done
    ```
 
-4. CodeDeploy starts shifting 20% traffic per minute to the new task set. Once any
-   traffic reaches the broken set, GET /jobs returns 500. The ALB records these as
-   `HTTPCode_Target_5XX_Count` in CloudWatch (alarm threshold: any 5XX > 0).
+4. While the load loop runs, keep the job board open in your browser. Once CodeDeploy
+   shifts ~20-40% traffic to the broken task set, browser refreshes start landing on
+   Flask's 500 error page. The load loop terminal shows 500 at the same time.
 
 5. Watch the `jobboard-cicd-alb-5xx` CloudWatch alarm turn ALARM (usually fires
    within the first or second minute of the shift). CodeDeploy detects the
    `DEPLOYMENT_STOP_ON_ALARM` event and initiates an automatic rollback. Traffic
-   returns to the original task set.
+   returns to the original task set. Browser refreshes return the working job board.
    ```
    CloudWatch > Alarms > jobboard-cicd-alb-5xx
    CodeDeploy > Deployments > (latest) > Traffic shifting tab
@@ -784,7 +789,7 @@ A route-level error gives the more interesting demo.
    historical data bucket) and stop the recovery deployment too.
 
    Once 5 minutes have passed since the last 500 response, reset the alarm and push
-   the fix immediately (no load loop during recovery):
+   the fix (no load loop during recovery):
    ```bash
    aws cloudwatch set-alarm-state \
      --alarm-name jobboard-cicd-alb-5xx \
@@ -797,7 +802,10 @@ A route-level error gives the more interesting demo.
    # remove the raise RuntimeError line, restore list_jobs to:
    @app.route("/jobs", methods=["GET"])
    def list_jobs():
-       return jsonify(scan_items(JOBS_TABLE)), 200
+       items = scan_items(JOBS_TABLE)
+       if request.accept_mimetypes.best_match(['application/json', 'text/html']) == 'text/html':
+           return render_template_string(JOBS_HTML, jobs=items), 200, {'Cache-Control': 'no-store'}
+       return jsonify(items), 200
    ```
    ```bash
    git commit -am "fix(jobs): remove intentional 500 from list_jobs"
@@ -810,20 +818,32 @@ A route-level error gives the more interesting demo.
 ## S19 -- Demo: ECS rolling update (contrast)
 
 Change `applications-api` and observe the simpler rolling update behavior --
-no traffic-shifting UI, no target group swap.
+no traffic-shifting UI, no target group swap. A banner appears in the browser
+after the task replacement completes.
 
-1. Edit `app/services/applications/app.py` -- change the `index()` response:
-   ```python
-   return jsonify({"service": "applications-api", "status": "ok", "version": "v2"}), 200
+1. **Before pushing anything**, open `http://<alb>/applications` in your browser.
+   You see two application cards (Alice Smith and Bob Jones). No banner yet -- v1.
+
+2. Edit `app/services/applications/app.py` -- add a total-count banner inside
+   `APPS_HTML`. Find the `<h4 class="mb-3">Applications</h4>` line and add the
+   alert immediately after it:
+   ```html
+   <h4 class="mb-3">Applications</h4>
+   <div class="alert alert-info">Total applications: {{ apps|length }}</div>
    ```
 
-2. Commit and push:
+3. Commit and push:
    ```bash
-   git commit -am "feat(applications): add version field to index response"
+   git commit -am "feat(applications): show total application count banner"
    git push
    ```
 
-3. Watch the ECS service in the console:
+4. Manually trigger the pipeline:
+   ```bash
+   aws codepipeline start-pipeline-execution --name jobboard-cicd-pipeline
+   ```
+
+5. Watch the ECS service in the console:
    ```
    ECS > Clusters > jobboard-cicd > Services > jobboard-cicd-applications-api-svc
      > Deployments
@@ -833,6 +853,9 @@ no traffic-shifting UI, no target group swap.
    Compare this to the blue/green experience from S17 -- no traffic-shifting tab,
    no target group swap, no 10-minute window. This is the trade-off: simpler and
    faster, but no controlled canary-style rollout.
+
+6. After the deploy completes (~3 min), refresh `http://<alb>/applications`. The
+   blue banner reading "Total applications: 2" appears at the top of the page.
 
 ---
 
@@ -980,6 +1003,23 @@ aws cloudformation describe-stacks --stack-name "$ENV" \
 
 Note the `ALBDnsName` output, then proceed from S10 (publish the shared library)
 and S16 (first pipeline run).
+
+**Pre-session browser check:** after the stack is up, confirm the ALB redirect is
+in place before S17:
+```bash
+curl -sI "http://$ALB/" | grep -i location
+# Expected: Location: /jobs
+```
+If the stack was created before this redirect was added, update the listener:
+```bash
+LISTENER=$(aws elbv2 describe-listeners \
+  --load-balancer-arn $(aws elbv2 describe-load-balancers \
+    --names jobboard-cicd-alb \
+    --query 'LoadBalancers[0].LoadBalancerArn' --output text) \
+  --query 'Listeners[0].ListenerArn' --output text)
+aws elbv2 modify-listener --listener-arn "$LISTENER" \
+  --default-actions '[{"Type":"redirect","RedirectConfig":{"Path":"/jobs","StatusCode":"HTTP_302"}}]'
+```
 
 **Teardown with CFN:**
 ```bash
