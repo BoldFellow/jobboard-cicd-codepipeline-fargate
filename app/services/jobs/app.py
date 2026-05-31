@@ -31,6 +31,7 @@ JOBS_HTML = """<!DOCTYPE html>
             <h5 class="card-title">{{ job.get('title', '') }}</h5>
             <h6 class="card-subtitle mb-2 text-muted">{{ job.get('company', '') }}</h6>
             <p class="card-text text-muted mb-0">{{ job.get('location', 'On-site') }}</p>
+            <span class="badge bg-success">{{ job.get('salary', 'Competitive') }}</span>
           </div>
           <div class="card-footer text-muted">
             <small>Posted: {{ job.get('created_at', '')[:10] }}</small>
